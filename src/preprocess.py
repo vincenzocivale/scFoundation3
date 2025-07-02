@@ -71,17 +71,21 @@ def preprocess_h5ad(input_path, gene_list_path, output_path, output_format='npz'
 
     # Controllo e normalizzazione
     if adata.raw is not None:
-        print("⚠️ 'raw' presente in adata: assicurati che dati siano normalizzati.")
-        matrix = adata.X
+        
+        print("⚠️ I dati 'raw' NON sembrano normalizzati. Li porto in adata.X per normalizzazione.")
+        adata.X = adata.raw.X.copy()
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
+
     else:
-        matrix = adata.X
-        if not is_normalized(matrix):
+        if not is_normalized(adata.X):
             print("⚠️ I dati NON sembrano normalizzati. Eseguo normalizzazione e log1p.")
             sc.pp.normalize_total(adata, target_sum=1e4)
             sc.pp.log1p(adata)
-            matrix = adata.X
         else:
             print("✅ I dati sembrano già normalizzati.")
+
+    matrix = adata.X
 
     # Carica lista geni target
     gene_list_df = pd.read_csv(gene_list_path, sep='\t')
@@ -95,29 +99,26 @@ def preprocess_h5ad(input_path, gene_list_path, output_path, output_format='npz'
     print(f"🧬 Geni target nella lista: {len(target_genes_set)}")
     print(f"✅ Geni comuni mantenuti: {len(common_genes)}")
 
-    # Se demo, usiamo subset righe
     if demo:
         print("⚠️ Demo mode: uso solo prime 1000 cellule")
         matrix = matrix[:1000, :]
+        adata = adata[:1000, :]
 
     # Selezione e padding senza DataFrame
     matrix_proc, padding_genes = main_gene_selection_sparse(matrix, gene_names, target_gene_list)
 
-    # Salvataggio solo npz supportato
-    if output_format != 'npz':
-        raise ValueError("Attualmente supportato solo il formato 'npz'.")
+    # Crea nuova var DataFrame
+    new_var = pd.DataFrame({'gene_name': target_gene_list})
 
-    print(f"💾 Salvataggio in formato NPZ: {output_path}")
-    scipy.sparse.save_npz(output_path, sp.csr_matrix(matrix_proc))
+    # Salvataggio
+    if output_format == 'npz':
+        print(f"💾 Salvataggio in formato NPZ: {output_path}")
+        scipy.sparse.save_npz(output_path, sp.csr_matrix(matrix_proc))
+    elif output_format == 'h5ad':
+        print(f"💾 Salvataggio in formato H5AD: {output_path}")
+        adata_new = sc.AnnData(X=matrix_proc, obs=adata.obs.copy(), var=new_var)
+        adata_new.write(output_path)
+    else:
+        raise ValueError("Formato non supportato. Usa 'npz' o 'h5ad'.")
+
     print("✅ Completato!")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Preprocessa un .h5ad e salva dati normalizzati in formato NPZ.")
-    parser.add_argument('--input_path', required=True, help="Percorso del file .h5ad")
-    parser.add_argument('--gene_list_path', default='./OS_scRNA_gene_index.19264.tsv', help="Lista geni target")
-    parser.add_argument('--output_path', required=True, help="Dove salvare il file pre-elaborato")
-    parser.add_argument('--output_format', choices=['npz'], default='npz', help="Formato di salvataggio")
-    parser.add_argument('--demo', action='store_true', help="Esegui su un sottoinsieme per test")
-    args = parser.parse_args()
-
-    preprocess_h5ad(args.input_path, args.gene_list_path, args.output_path, args.output_format, args.demo)

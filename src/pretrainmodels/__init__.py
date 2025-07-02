@@ -1,3 +1,3 @@
 # Copyright 2023 BioMap (Beijing) Intelligence Technology Limited
 
-from pretrainmodels.select_model import select_model
+from src.pretrainmodels.select_model import select_model
