@@ -8,6 +8,7 @@ import scipy.sparse
 from scipy.sparse import issparse
 import scanpy as sc
 import h5py
+from src.load import load_model_frommmf, gatherData
 
 def process_gene_expression(
     data_path: str,
