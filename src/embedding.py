@@ -22,7 +22,7 @@ def process_gene_expression(
     pool_type: str = 'all',
     batch_size: int = 1000,
     seed: int = 0,
-    use_fp16: bool = False # Aggiunto il parametro use_fp16
+    use_fp16: bool = True # Aggiunto il parametro use_fp16
 ):
     # Set random seed for reproducibility
     random.seed(seed)
