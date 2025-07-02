@@ -14,23 +14,25 @@ model_ckpt_path = '/equilibrium/datasets/TCGA-histological-data/models1.ckpt'
 
 print(f"Inizio generazione embedding per {input_h5ad_file}")
 
+TELEGRAM_BOT_TOKEN = "8145248176:AAHjCprIvnz7AB4-oS8ycvdNlRBw519z-rg"
+TELEGRAM_CHAT_ID = "564539816"
+
+notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+
 try:
-    final_output_h5ad_path = generate_cell_embeddings(
+    process_gene_expression(
         data_path=input_h5ad_file,
+        ckpt_path=model_ckpt_path,
         save_path=output_dir,
-        task_name='my_single_cell_analysis',
-        input_type='singlecell',
-        output_type='cell',
+        task_name='batched_analysis',
+        target_high_resolution='t4',
         pool_type='all',
-        tgthighres='t4',
-        pre_normalized='T', # Se i dati sono già normalizzati (dal preprocess.py), usa 'T'
-        demo=False,          # Imposta a True se vuoi testare su un piccolo sottoinsieme (prime 10 cellule)
-        version='ce',
-        model_path=model_ckpt_path, # Decommenta e imposta se il modello non è nel percorso predefinito
-        ckpt_name='01B-resolution',
-        batch_size=1
+        batch_size=500, 
+        seed=42
     )
     print(f"\nProcesso completato. Embedding salvati in: {final_output_h5ad_path}")
+    notifier.send_message(f"\nProcesso completato. Embedding salvati in: {final_output_h5ad_path}")
 
 except Exception as e:
     print(f"\nSi è verificato un errore durante la generazione degli embedding: {e}")
+    notifier.send_message(f"\nSi è verificato un errore durante la generazione degli embedding: {e}")
