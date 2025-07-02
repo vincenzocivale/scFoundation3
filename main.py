@@ -1,4 +1,5 @@
 from src.embedding import process_gene_expression
+from src.telegram import TelegramNotifier
 import os
 
 # Crea la directory 'results' se non esiste
