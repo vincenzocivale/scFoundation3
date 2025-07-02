@@ -1,4 +1,4 @@
-from src.embedding import generate_cell_embeddings
+from src.embedding import process_gene_expression
 import os
 
 # Crea la directory 'results' se non esiste
