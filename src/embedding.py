@@ -22,7 +22,10 @@ def process_gene_expression(
     pool_type: str = 'all',
     batch_size: int = 1000,
     seed: int = 0,
-    use_fp16: bool = True # Aggiunto il parametro use_fp16
+    use_fp16: bool = True,
+    # --- NUOVI PARAMETRI PER IL SALVATAGGIO DI BACKUP ---
+    backup_interval_cells: int = 100000, # Salva un backup ogni N cellule
+    resume_from_backup: bool = True # Cerca i backup esistenti e riprendi
 ):
     # Set random seed for reproducibility
     random.seed(seed)
@@ -61,13 +64,51 @@ def process_gene_expression(
         print(f"Error loading pre-trained model: {e}")
         return
 
-    all_gene_embeddings = []
+    # Liste per accumulare tutti gli embedding e ID (per il file finale)
+    all_gene_embeddings_final = []
+    all_cell_ids_final = []
 
-    strname = os.path.join(
+    # Per tenere traccia dell'indice da cui ripartire
+    start_cell_idx = 0
+
+    # --- LOGICA DI RIPRESA DA BACKUP ---
+    if resume_from_backup:
+        backup_files = sorted([f for f in os.listdir(save_path) if f.startswith(f"{task_name}_backup_") and f.endswith(".h5ad")])
+        if backup_files:
+            last_backup_file = backup_files[-1]
+            try:
+                # Il nome del file di backup dovrebbe contenere l'indice della cellula finale del backup
+                # Es. "embedding_task_backup_0_100000.h5ad" -> riparte da 100000
+                last_end_idx_str = last_backup_file.split('_')[-1].replace('.h5ad', '')
+                start_cell_idx = int(last_end_idx_str)
+                print(f"Resuming from backup file: {last_backup_file}. Starting from cell index {start_cell_idx}.")
+
+                # Carica il contenuto del backup nell'array finale
+                backup_adata = sc.read_h5ad(os.path.join(save_path, last_backup_file))
+                all_gene_embeddings_final.append(backup_adata.X)
+                all_cell_ids_final.extend(backup_adata.obs_names.tolist())
+
+            except Exception as e:
+                print(f"Warning: Could not resume from backup {last_backup_file} due to error: {e}. Starting from scratch.")
+                start_cell_idx = 0
+                all_gene_embeddings_final = []
+                all_cell_ids_final = []
+        else:
+            print("No existing backup files found. Starting from scratch.")
+    else:
+        print("Resume from backup is disabled. Starting from scratch.")
+
+    strname_npy = os.path.join(
         save_path,
         f"{task_name}_{ckpt_name}_{input_type}_{output_type}_embedding_{target_high_resolution}_resolution.npy"
     )
-    print(f'Saving embeddings at: {strname}')
+    strname_h5ad = os.path.join(
+        save_path,
+        f"{task_name}_{ckpt_name}_{input_type}_{output_type}_embedding_{target_high_resolution}_resolution.h5ad"
+    )
+    print(f'Final .npy embeddings will be saved at: {strname_npy}')
+    print(f'Final .h5ad with embeddings and IDs will be saved at: {strname_h5ad}')
+
 
     try:
         resolution_value = float(target_high_resolution[1:])
@@ -77,36 +118,27 @@ def process_gene_expression(
 
     print("Starting inference with batch processing...")
     num_cells = gexpr_feature.shape[0]
+    cell_ids_full_dataset = gexpr_feature.obs_names.tolist()
 
-    for i in tqdm(range(0, num_cells, batch_size), desc="Processing batches"):
+    # Liste temporanee per gli embedding e ID del batch corrente (per il backup incrementale)
+    current_batch_embeddings = []
+    current_batch_ids = []
+
+    # Loop principale che inizia da start_cell_idx
+    for i in tqdm(range(start_cell_idx, num_cells, batch_size), initial=start_cell_idx // batch_size, total=num_cells // batch_size, desc="Processing batches"):
         end_idx = min(i + batch_size, num_cells)
 
-        # Estrai il batch di cellule (l'oggetto AnnData in modalità backed carica i dati in questo punto)
-        batch_adata = gexpr_feature[i:end_idx, :] # Ora batch_adata è un AnnData con i dati del batch
+        batch_adata = gexpr_feature[i:end_idx, :]
+        batch_cell_ids = cell_ids_full_dataset[i:end_idx]
 
-        # Prepara i dati del batch
         batch_gene_x_list = []
-
-        # Accedi alla matrice X del batch
-        if issparse(batch_adata.X):
-            # Se la matrice X è sparsa, sommiamo lungo l'asse dei geni per ogni cellula
-            # Non è necessario convertire in toarray() l'intero batch, solo per la riga attuale
-            batch_data_rows = batch_adata.X # Questo è ancora un oggetto CSR/CSC sparso
-        else:
-            batch_data_rows = batch_adata.X # Questo è un array NumPy denso
+        batch_data_rows = batch_adata.X
 
         for row_idx_in_batch in range(batch_adata.shape[0]):
-            # Estrai la riga corrente come array denso per la somma e il tolist
             current_cell_data = batch_data_rows[row_idx_in_batch, :]
-
-            # Calcola il totalcount sommando tutti i valori della riga
-            # Gestisce sia sparse che dense
             totalcount = current_cell_data.sum()
-
-            # Gestione di totalcount = 0 per evitare log10(0)
             log_total_count = np.log10(totalcount) if totalcount > 0 else np.log10(1)
 
-            # Assicurati che tmpdata sia un elenco di numeri float
             if issparse(current_cell_data):
                 tmpdata = current_cell_data.toarray().flatten().tolist()
             else:
@@ -114,7 +146,6 @@ def process_gene_expression(
 
             batch_gene_x_list.append(tmpdata + [resolution_value, log_total_count])
 
-        # Converti la lista di liste in un tensore unico per il batch
         if use_fp16 and device.type == 'cuda':
             pretrain_gene_x_batch = torch.tensor(batch_gene_x_list).to(device).half()
         else:
@@ -122,21 +153,16 @@ def process_gene_expression(
 
         with torch.no_grad():
             data_gene_ids = torch.arange(19266, device=pretrain_gene_x_batch.device).repeat(pretrain_gene_x_batch.shape[0], 1)
-
             value_labels = pretrain_gene_x_batch > 0
             x, x_padding = gatherData(pretrain_gene_x_batch, value_labels, pretrainconfig['pad_token_id'])
-
             position_gene_ids, _ = gatherData(data_gene_ids, value_labels, pretrainconfig['pad_token_id'])
 
-            # *** CORREZIONE PER L'ERRORE FLOAT/HALF ***
-            # Assicurati che l'input a token_emb sia del tipo corretto (half se il modello è half)
             if use_fp16 and device.type == 'cuda':
                 x = pretrainmodel.token_emb(torch.unsqueeze(x, 2).half(), output_weight = 0)
             else:
                 x = pretrainmodel.token_emb(torch.unsqueeze(x, 2).float(), output_weight = 0)
 
             position_emb = pretrainmodel.pos_emb(position_gene_ids)
-            # Anche position_emb deve essere dello stesso tipo (half() se il modello è half())
             if use_fp16 and device.type == 'cuda':
                 position_emb = position_emb.half()
 
@@ -155,11 +181,12 @@ def process_gene_expression(
             else:
                 raise ValueError("pool_type must be 'all' or 'max'")
 
-            all_gene_embeddings.append(geneembmerge.detach().cpu().numpy())
+            # Aggiungi gli embedding e gli ID del batch alle liste temporanee
+            current_batch_embeddings.append(geneembmerge.detach().cpu().numpy())
+            current_batch_ids.extend(batch_cell_ids)
 
         # Pulizia della memoria dopo ogni batch
-        # Elimina le variabili locali del ciclo per liberare memoria
-        del batch_adata # Rimuovi anche questa
+        del batch_adata
         del batch_gene_x_list
         del pretrain_gene_x_batch
         del data_gene_ids
@@ -167,7 +194,47 @@ def process_gene_expression(
         del x, x_padding, position_gene_ids, position_emb, geneemb, geneemb1, geneemb2, geneemb3, geneemb4, geneembmerge
         torch.cuda.empty_cache()
 
-    final_gene_embeddings = np.concatenate(all_gene_embeddings, axis=0)
+        # --- LOGICA DI SALVATAGGIO DI BACKUP INCREMENTALE ---
+        # Controlla se abbiamo raggiunto l'intervallo di salvataggio O se è l'ultimo batch
+        if (len(all_cell_ids_final) + len(current_batch_ids)) % backup_interval_cells < batch_size or (end_idx == num_cells):
+            if current_batch_embeddings: # Assicurati che ci siano dati da salvare
+
+                # Concatena gli embedding e gli ID accumulati in questo intervallo
+                combined_interval_embeddings = np.concatenate(current_batch_embeddings, axis=0)
+                all_gene_embeddings_final.append(combined_interval_embeddings)
+                all_cell_ids_final.extend(current_batch_ids)
+
+                # Crea l'oggetto AnnData per il backup
+                obs_df_backup = pd.DataFrame(index=all_cell_ids_final)
+                backup_adata = sc.AnnData(X=np.concatenate(all_gene_embeddings_final, axis=0), obs=obs_df_backup)
+
+                # Definisci il nome del file di backup con l'indice della cellula fino a cui siamo arrivati
+                backup_filename = os.path.join(save_path, f"{task_name}_backup_{len(all_cell_ids_final)}.h5ad")
+                backup_adata.write(backup_filename)
+                print(f"Backup saved for {len(all_cell_ids_final)} cells at: {backup_filename}")
+
+                # Resetta le liste temporanee per il prossimo intervallo
+                current_batch_embeddings = []
+                current_batch_ids = []
+
+    # --- SALVATAGGIO FINALE ---
+    # Se ci sono dati rimanenti dopo l'ultimo backup (o se non ci sono mai stati backup)
+    if current_batch_embeddings:
+        combined_interval_embeddings = np.concatenate(current_batch_embeddings, axis=0)
+        all_gene_embeddings_final.append(combined_interval_embeddings)
+        all_cell_ids_final.extend(current_batch_ids)
+
+
+    final_gene_embeddings = np.concatenate(all_gene_embeddings_final, axis=0)
     print(f"Generated total embeddings with shape: {final_gene_embeddings.shape}")
-    np.save(strname, final_gene_embeddings)
-    print("Inference complete and embeddings saved.")
+
+    np.save(strname_npy, final_gene_embeddings)
+
+    obs_df = pd.DataFrame(index=all_cell_ids_final)
+    embedding_adata = sc.AnnData(X=final_gene_embeddings, obs=obs_df)
+
+    embedding_adata.write(strname_h5ad)
+
+    print("Inference complete.")
+    print(f"Combined .npy embeddings saved at: {strname_npy}")
+    print(f"Final AnnData with embeddings and cell IDs saved at: {strname_h5ad}")
