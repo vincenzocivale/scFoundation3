@@ -3,7 +3,7 @@ from src.telegram import TelegramNotifier
 import os
 
 # Crea la directory 'results' se non esiste
-output_dir = '/equilibrium/datasets/TCGA-histological-data//lung_embeddings'
+output_dir = '/equilibrium/datasets/TCGA-histological-data/lung_embeddings'
 os.makedirs(output_dir, exist_ok=True)
 
 # Percorso al tuo file H5AD pre-processato
