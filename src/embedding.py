@@ -43,7 +43,7 @@ def process_gene_expression(
 
     try:
         # Carica i dati in modalità backed per efficienza di memoria
-        gexpr_feature = sc.read_h5ad(data_path, backed='r+')
+        gexpr_feature = sc.read_h5ad(data_path, backed='r')
         print(f"Successfully loaded data from {data_path} with shape {gexpr_feature.shape}")
     except FileNotFoundError:
         print(f"Error: Data file not found at {data_path}")
