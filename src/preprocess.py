@@ -61,6 +61,14 @@ def preprocess_h5ad(input_path, gene_list_path, output_path, output_format='npz'
     print(f"📥 Caricamento: {input_path}")
     adata = sc.read_h5ad(input_path)
 
+    # 🔍 Filtra cellule con 'cell_type' unknown
+    if 'cell_type' in adata.obs.columns:
+        initial_n = adata.n_obs
+        adata = adata[~adata.obs['cell_type'].isin(['unknown', 'Unknown'])].copy()
+        print(f"🧹 Filtrate {initial_n - adata.n_obs:,} cellule con cell_type 'unknown'")
+    else:
+        print("⚠️ Colonna 'cell_type' non trovata in adata.obs — nessun filtro applicato.")
+
     # Trova i nomi dei geni
     if 'Gene' in adata.var.columns:
         gene_names = adata.var['Gene'].tolist()
